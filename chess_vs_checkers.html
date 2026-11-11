@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chess vs Checkers</title>
+<style>
+:root{--light:#f0d9b5;--dark:#b58863;--ink:#202124;--accent:#2563eb}
+*{box-sizing:border-box}body{margin:0;background:#f4f5f7;color:var(--ink);font:16px system-ui,Segoe UI,sans-serif}
+main{max-width:900px;margin:auto;padding:18px}.top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+h1{font-size:clamp(24px,5vw,34px);margin:4px 0}.sub{color:#555;margin:0 0 14px}
+.panel{background:white;border:1px solid #ddd;border-radius:14px;padding:14px;margin:12px 0}
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,input{font:inherit;border-radius:9px;border:1px solid #bbb;padding:9px 12px}
+button{background:#202124;color:white;border:0;cursor:pointer}button.secondary{background:#e8eaf0;color:#222}button:disabled{opacity:.45;cursor:not-allowed}
+input{min-width:120px;max-width:100%}.status{font-weight:700;font-size:18px}.small{font-size:13px;color:#555}
+#board{width:min(92vw,620px);display:grid;grid-template-columns:repeat(8,1fr);border:5px solid #5d4037;border-radius:5px;overflow:hidden;touch-action:manipulation}
+.square{aspect-ratio:1;display:grid;place-items:center;position:relative;cursor:pointer;font-size:clamp(25px,6.5vw,52px);user-select:none}
+.square.light{background:var(--light)}.square.dark{background:var(--dark)}
+.square.selected{outline:4px solid #facc15;outline-offset:-4px}.square.target:after{content:"";width:22%;height:22%;border-radius:50%;background:#166534;opacity:.65;position:absolute}
+.square.capture:after{content:"";position:absolute;inset:4px;border:4px solid #166534;border-radius:50%;opacity:.65}
+.piece{z-index:1;line-height:1}.chess{filter:drop-shadow(0 1px 1px #333)}.checker{width:67%;height:67%;border-radius:50%;border:4px solid #eee;box-shadow:inset 0 0 0 3px #222,0 2px 3px #333;z-index:1;display:grid;place-items:center;font-size:clamp(15px,3vw,25px);color:#facc15}
+.checker.red{background:#a32323}.checker.black{background:#191919}
+.row{display:flex;gap:16px;flex-wrap:wrap;align-items:center}.tag{display:inline-block;border-radius:99px;background:#eef2ff;padding:4px 10px;font-size:13px}
+#log{max-height:110px;overflow:auto;font-size:13px;color:#555}
+@media(min-width:700px){.game{display:grid;grid-template-columns:minmax(320px,620px) 1fr;gap:18px;align-items:start}}
+</style>
+</head>
+<body><main>
+<div class="top"><div><h1>♟ Chess vs Checkers</h1><p class="sub">One board. Two armies. Take turns.</p></div><span class="tag">Free browser game</span></div>
+<div class="panel">
+ <div class="controls">
+  <button id="host">Create room</button><button id="copy" class="secondary" disabled>Copy invite link</button>
+  <input id="room" placeholder="Room code">
+  <button id="join">Join room</button>
+  <button id="reset" class="secondary">Restart game</button>
+ </div>
+ <p id="connection" class="small">Create a room and send the invite link, or enter the room code your opponent gave you.</p>
+</div>
+<div class="game">
+ <div>
+  <div class="panel"><div class="row"><div class="status" id="status">Create or join a room to play.</div><span id="role" class="tag">Not connected</span></div></div>
+  <div id="board" aria-label="Game board"></div>
+ </div>
+ <aside>
+  <div class="panel"><b>Teams</b><p>🔵 You: Chess pieces</p><p>🔴 Opponent: Checkers pieces</p><p class="small">The room creator plays chess. The person who joins plays checkers.</p></div>
+  <div class="panel"><b>How to play</b>
+   <ul class="small">
+    <li>Players alternate turns: one chess move, then one checkers move.</li>
+    <li>Chess pieces move in their usual directions and can capture checkers.</li>
+    <li>Checkers move diagonally forward, jump over chess pieces to capture, and become kings at the far edge.</li>
+    <li>Checkers kings move and capture diagonally in either direction.</li>
+    <li>Chess pawns promote to queens on the far edge.</li>
+    <li>The chess king can be captured. The first side to lose every piece loses.</li>
+   </ul>
+   <p class="small"><b>Note:</b> This crossover uses standard piece movement, but does not enforce chess check/checkmate, castling, or en passant. Checkers captures are mandatory when available.</p>
+  </div>
+  <div class="panel"><b>Move history</b><div id="log">No moves yet.</div></div>
+</aside>
+</div>
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const chessGlyph={K:"♔",Q:"♕",R:"♖",B:"♗",N:"♘",P:"♙"};
+const files="abcdefgh";
+let board=[], checkers=[], turn="chess", selected=null, legalTargets=[], role=null, peer=null, conn=null, roomId=null, connected=false, history=[];
+function init(){
+ board=Array.from({length:8},()=>Array(8).fill(null));checkers=[];
+ const back=["R","N","B","Q","K","B","N","R"];
+ for(let c=0;c<8;c++){board[7][c]={type:back[c],side:"chess"};board[6][c]={type:"P",side:"chess"};}
+ for(let c=0;c<8;c++){checkers.push({r:0,c,king:false});checkers.push({r:1,c,king:false});}
+ // Checker starting rows 0 and 1, only playable dark squares
+ checkers=checkers.filter(p=>(p.r+p.c)%2===1);
+ for(let c=0;c<8;c++)checkers.push({r:2,c,king:false});
+ checkers=checkers.filter(p=>(p.r+p.c)%2===1);
+ turn="chess";selected=null;legalTargets=[];history=[];render();
+}
+function atChecker(r,c){return checkers.findIndex(p=>p.r===r&&p.c===c)}
+function inside(r,c){return r>=0&&r<8&&c>=0&&c<8}
+function pathClear(r,c,nr,nc){let dr=Math.sign(nr-r),dc=Math.sign(nc-c),x=r+dr,y=c+dc;while(x!==nr||y!==nc){if(board[x][y]||atChecker(x,y)>=0)return false;x+=dr;y+=dc;}return true}
+function chessMoves(r,c){
+ const p=board[r][c],out=[];if(!p||p.side!=="chess")return out;
+ const add=(nr,nc)=>{if(!inside(nr,nc)||board[nr][nc])return;if(atChecker(nr,nc)>=0){}out.push([nr,nc])};
+ const dirs={R:[[1,0],[-1,0],[0,1],[0,-1]],B:[[1,1],[1,-1],[-1,1],[-1,-1]],Q:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],K:[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],N:[[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]]};
+ if(p.type==="P"){
+  if(inside(r-1,c)&&!board[r-1][c]&&atChecker(r-1,c)<0){out.push([r-1,c]);if(r===6&&!board[4][c]&&atChecker(4,c)<0)out.push([4,c]);}
+  for(const dc of [-1,1])if(inside(r-1,c+dc)&&(board[r-1][c+dc]||atChecker(r-1,c+dc)>=0))out.push([r-1,c+dc]);
+ } else {
+  for(const [dr,dc] of dirs[p.type]){
+   if(p.type==="N"||p.type==="K"){let nr=r+dr,nc=c+dc;if(inside(nr,nc)&&!board[nr][nc])out.push([nr,nc]);}
+   else {let nr=r+dr,nc=c+dc;while(inside(nr,nc)){if(board[nr][nc])break;out.push([nr,nc]);if(atChecker(nr,nc)>=0)break;nr+=dr;nc+=dc;}}
+  }
+ }
+ return out.filter(([nr,nc])=>!board[nr][nc]||board[nr][nc].side!=="chess");
+}
+function checkerMoves(i){
+ const p=checkers[i],out=[],dirs=p.king?[-1,1]:[-1];
+ // checker side advances toward row 7; kings both directions
+ for(const dr of (p.king?[-1,1]:[1]))for(const dc of [-1,1]){
+  let nr=p.r+dr,nc=p.c+dc;if(!inside(nr,nc))continue;
+  if(!board[nr][nc]&&atChecker(nr,nc)<0)out.push({to:[nr,nc],cap:null});
+  else if(board[nr][nc]&&atChecker(nr,nc)<0){
+   let jr=nr+dr,jc=nc+dc;if(inside(jr,jc)&&!board[jr][jc]&&atChecker(jr,jc)<0)out.push({to:[jr,jc],cap:[nr,nc]});
+  }
+ }
+ return out;
+}
+function allCheckerMoves(){return checkers.flatMap((p,i)=>checkerMoves(i).map(m=>({i,...m})))}
+function render(){
+ const el=$("board");el.innerHTML="";
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){
+  const s=document.createElement("div");s.className="square "+((r+c)%2?"dark":"light");
+  if(selected&&selected.r===r&&selected.c===c)s.classList.add("selected");
+  const target=legalTargets.find(t=>t.r===r&&t.c===c);if(target)s.classList.add(target.capture?"capture":"target");
+  const p=board[r][c],ci=atChecker(r,c);
+  if(p){const sp=document.createElement("span");sp.className="piece chess";sp.textContent=chessGlyph[p.type];s.appendChild(sp);}
+  else if(ci>=0){const sp=document.createElement("span");sp.className="checker red";sp.textContent=checkers[ci].king?"♛":"";s.appendChild(sp);}
+  s.addEventListener("click",()=>clickSquare(r,c));el.appendChild(s);
+ }
+ $("status").textContent=!connected?"Create or join a room to play.":winner()|| (turn==="chess"?"Chess player's turn":"Checkers player's turn");
+ $("role").textContent=role==="host"?"You are Chess":role==="guest"?"You are Checkers":"Spectator";
+ $("log").innerHTML=history.length?history.slice(-12).map(x=>"<div>"+escapeHtml(x)+"</div>").join(""):"No moves yet.";
+}
+function escapeHtml(s){return s.replace(/[&<>"]/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]))}
+function winner(){let chess=board.flat().filter(Boolean).length,check=checkers.length;if(!chess)return "Checkers wins!";if(!check)return "Chess wins!";return ""}
+function clickSquare(r,c){
+ if(!connected||winner())return;
+ if(turn==="chess"&&role==="host"){
+  if(selected){let t=legalTargets.find(x=>x.r===r&&x.c===c);if(t){moveChess(selected.r,selected.c,r,c);return;}}
+  if(board[r][c]){selected={r,c};legalTargets=chessMoves(r,c).map(([r,c])=>({r,c,capture:atChecker(r,c)>=0}));}
+ } else if(turn==="checkers"&&role==="guest"){
+  if(selected){let t=legalTargets.find(x=>x.r===r&&x.c===c);if(t){moveChecker(selected.i,r,c,t.cap);return;}}
+  const i=atChecker(r,c);if(i>=0){const moves=checkerMoves(i),all=allCheckerMoves(),forced=all.some(m=>m.cap);const allowed=forced?moves.filter(m=>m.cap):moves;selected={i,r,c};legalTargets=allowed.map(m=>({r:m.to[0],c:m.to[1],capture:!!m.cap,cap:m.cap}));}
+ }
+ render();
+}
+function moveChess(r,c,nr,nc){
+ const captured=atChecker(nr,nc);if(captured>=0)checkers.splice(captured,1);
+ board[nr][nc]=board[r][c];board[r][c]=null;
+ if(board[nr][nc].type==="P"&&nr===0)board[nr][nc].type="Q";
+ history.push("Chess: "+files[c]+(8-r)+" → "+files[nc]+(8-nr)+(captured>=0?" (captured checker)":""));
+ finishMove();
+}
+function moveChecker(i,nr,nc,cap){
+ const p=checkers[i];if(cap){const [cr,cc]=cap;board[cr][cc]=null;history.push("Checkers: "+files[p.c]+(8-p.r)+" jumps "+files[cc]+(8-cr)+" → "+files[nc]+(8-nr));}
+ else history.push("Checkers: "+files[p.c]+(8-p.r)+" → "+files[nc]+(8-nr));
+ p.r=nr;p.c=nc;if(nr===7)p.king=true;
+ finishMove();
+}
+function finishMove(){turn=turn==="chess"?"checkers":"chess";selected=null;legalTargets=[];if(role==="guest"&&conn&&conn.open)conn.send({type:"state",state:snapshot()});else broadcast();render()}
+function snapshot(){return {board,checkers,turn,history}}
+function broadcast(){if(role==="host"&&conn&&conn.open)conn.send({type:"state",state:snapshot()});}
+function applyState(s){board=s.board;checkers=s.checkers;turn=s.turn;history=s.history||[];selected=null;legalTargets=[];render()}
+function setupPeer(isHost){
+ if(peer)peer.destroy();peer=null;conn=null;connected=false;role=isHost?"host":"guest";
+ peer=new Peer();
+ peer.on("open",id=>{
+  if(isHost){roomId=id;$("room").value=id;$("connection").textContent="Room created. Copy the invite link and send it to your opponent.";$("copy").disabled=false;init();connected=true;render();}
+  else {const target=$("room").value.trim();if(!target){$("connection").textContent="Enter a room code first.";return;}conn=peer.connect(target);wireConnection();}
+ });
+ peer.on("connection",c=>{if(isHost){conn=c;wireConnection();}});
+ peer.on("error",e=>{$("connection").textContent="Connection issue: "+e.type+". Try creating/joining again.";});
+}
+function wireConnection(){
+ conn.on("open",()=>{
+  connected=true;$("connection").textContent="Connected! "+(role==="host"?"You play chess.":"You play checkers.");
+  if(role==="host"){init();conn.send({type:"state",state:snapshot()});}
+  else conn.send({type:"hello"});
+  render();
+ });
+ conn.on("data",msg=>{
+  if(msg.type==="state"&&role==="guest"){applyState(msg.state);}
+  if(msg.type==="state"&&role==="host"){applyState(msg.state);broadcast();}
+  if(msg.type==="hello"&&role==="host")conn.send({type:"state",state:snapshot()});
+  if(msg.type==="reset"){init();if(role==="host")broadcast();}
+ });
+ conn.on("close",()=>{$("connection").textContent="Opponent disconnected." ;connected=false;render();});
+}
+$("host").onclick=()=>{init();setupPeer(true)};
+$("join").onclick=()=>{if(!$("room").value.trim()){$("connection").textContent="Enter the room code first.";return;}setupPeer(false)};
+$("copy").onclick=async()=>{
+ const u=new URL(location.href);u.searchParams.set("room",roomId);
+ try{await navigator.clipboard.writeText(u.toString());$("connection").textContent="Invite link copied. Send it to your opponent.";}
+ catch(e){$("connection").textContent="Copy this room code and send it: "+roomId;}
+};
+$("reset").onclick=()=>{if(role==="host"){init();connected=true;broadcast();if(conn)conn.send({type:"reset"});}else if(conn)conn.send({type:"reset"});};
+const params=new URLSearchParams(location.search);if(params.get("room"))$("room").value=params.get("room");
+init();
+</script></body></html>
